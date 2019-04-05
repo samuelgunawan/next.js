@@ -1,15 +1,16 @@
 import mkdirpModule from 'mkdirp'
 import { promisify } from 'util'
 import { extname, join, dirname, sep } from 'path'
-import { cleanAmpPath } from 'next-server/dist/server/utils'
 import { renderToHTML } from 'next-server/dist/server/render'
 import { writeFile } from 'fs'
 import Sema from 'async-sema'
-import AmpHtmlValidator from 'amphtml-validator'
 import { loadComponents } from 'next-server/dist/server/load-components'
 
 const envConfig = require('next-server/config')
 const mkdirp = promisify(mkdirpModule)
+
+import loadConfig from 'next-server/next-config'      // Needed for extension support (ie., less) #6181 #6384 #6181
+import { PHASE_EXPORT } from 'next-server/constants'  // Needed for call to loadConfig()
 
 global.__NEXT_DATA__ = {
   nextExport: true
@@ -32,13 +33,6 @@ process.on(
       const work = async path => {
         await sema.acquire()
         const { page, query = {} } = exportPathMap[path]
-        const ampOpts = { amphtml: query.amphtml, hasAmp: query.hasAmp, ampPath: query.ampPath }
-        const ampOnly = query.ampOnly
-        delete query.ampOnly
-        delete query.hasAmp
-        delete query.ampPath
-        delete query.amphtml
-
         const req = { url: path }
         const res = {}
         envConfig.setConfig({
@@ -46,13 +40,7 @@ process.on(
           publicRuntimeConfig: renderOpts.runtimeConfig
         })
 
-        if (ampOnly) {
-          path = cleanAmpPath(path)
-          ampOpts.ampPath = path + '.amp'
-        }
-
-        // replace /docs/index.amp with /docs.amp
-        path = path.replace(/(?<!^)\/index\.amp$/, '.amp')
+        const nextConfig = loadConfig(PHASE_EXPORT)     // Needed for extension support (ie., less) #6181 #6384 #6181
 
         let htmlFilename = `${path}${sep}index.html`
         const pageExt = extname(page)
@@ -70,28 +58,7 @@ process.on(
 
         await mkdirp(baseDir)
         const components = await loadComponents(distDir, buildId, page)
-        const html = await renderToHTML(req, res, page, query, { ...components, ...renderOpts, ...ampOpts })
-
-        if (ampOpts.amphtml && query.amp) {
-          const validator = await AmpHtmlValidator.getInstance()
-          const result = validator.validateString(html)
-          const errors = result.errors.filter(e => e.severity === 'ERROR')
-          const warnings = result.errors.filter(e => e.severity !== 'ERROR')
-
-          if (warnings.length || errors.length) {
-            process.send({
-              type: 'amp-validation',
-              payload: {
-                page,
-                result: {
-                  errors,
-                  warnings
-                }
-              }
-            })
-          }
-        }
-
+        const html = await renderToHTML(req, res, page, query, { ...components, ...renderOpts })
         await new Promise((resolve, reject) =>
           writeFile(
             htmlFilepath,
